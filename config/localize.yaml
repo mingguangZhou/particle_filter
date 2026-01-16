@@ -1,5 +1,6 @@
 particle_filter:
   ros__parameters:
+    use_sim_time: true
     # topic names
     scan_topic: '/scan'
     odometry_topic: '/ego_racecar/odom'

@@ -244,7 +244,8 @@ class ParticleFiler(Node):
         # header
         t.header.stamp = stamp
         t.header.frame_id = '/map'
-        t.child_frame_id = '/laser'
+        # t.child_frame_id = '/ego_racecar/laser'
+        t.child_frame_id = '/ego_racecar/odom'
         # translation
         t.transform.translation.x = pose[0]
         t.transform.translation.y = pose[1]
@@ -270,6 +271,45 @@ class ParticleFiler(Node):
             self.odom_pub.publish(odom)
         
         return
+
+    # def publish_tf(self, pose, stamp=None):
+    #     if stamp is None:
+    #         stamp = self.get_clock().now().to_msg()
+
+    #     t = TransformStamped()
+    #     t.header.stamp = stamp
+
+    #     # map → odom (THIS IS THE ONLY TF PF SHOULD PUBLISH)
+    #     t.header.frame_id = 'map'
+    #     t.child_frame_id = 'ego_racecar/odom'
+
+    #     t.transform.translation.x = pose[0]
+    #     t.transform.translation.y = pose[1]
+    #     t.transform.translation.z = 0.0
+
+    #     q = tf_transformations.quaternion_from_euler(0.0, 0.0, pose[2])
+    #     t.transform.rotation.x = q[0]
+    #     t.transform.rotation.y = q[1]
+    #     t.transform.rotation.z = q[2]
+    #     t.transform.rotation.w = q[3]
+
+    #     self.pub_tf.sendTransform(t)
+
+    #     # Optional odometry publication
+    #     if self.PUBLISH_ODOM:
+    #         odom = Odometry()
+    #         odom.header.stamp = stamp
+    #         odom.header.frame_id = 'ego_racecar/odom'
+    #         odom.child_frame_id = 'ego_racecar/base_link'
+
+    #         odom.pose.pose.position.x = 0.0
+    #         odom.pose.pose.position.y = 0.0
+    #         odom.pose.pose.orientation.w = 1.0
+
+    #         self.odom_pub.publish(odom)
+
+    #     return
+
 
     def visualize(self):
         '''
@@ -318,7 +358,7 @@ class ParticleFiler(Node):
         # publish the given angels and ranges as a laser scan message
         ls = LaserScan()
         ls.header.stamp = self.last_stamp
-        ls.header.frame_id = '/laser'
+        ls.header.frame_id = '/ego_racecar/laser'
         ls.angle_min = np.min(angles)
         ls.angle_max = np.max(angles)
         ls.angle_increment = np.abs(angles[0] - angles[1])
