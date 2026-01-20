@@ -193,6 +193,27 @@ class ParticleFiler(Node):
 
         self.get_logger().info('Finished initializing, waiting on messages...')
 
+        self._initialize_from_sim_start()
+
+    def _initialize_from_sim_start(self):
+        msg = PoseWithCovarianceStamped()
+        msg.header.frame_id = 'map'
+        msg.header.stamp = self.get_clock().now().to_msg()
+
+        msg.pose.pose.position.x = 0.0
+        msg.pose.pose.position.y = 0.0
+
+        q = tf_transformations.quaternion_from_euler(
+            0.0, 0.0, 0.0
+        )
+        msg.pose.pose.orientation.x = q[0]
+        msg.pose.pose.orientation.y = q[1]
+        msg.pose.pose.orientation.z = q[2]
+        msg.pose.pose.orientation.w = q[3]
+
+        self.get_logger().info('Initializing PF from simulator start pose')
+        self.initialize_particles_pose(msg.pose.pose)
+
     def get_omap(self):
         '''
         Fetch the occupancy grid map from the map_server instance, and initialize the correct
@@ -245,7 +266,8 @@ class ParticleFiler(Node):
         t.header.stamp = stamp
         t.header.frame_id = '/map'
         # t.child_frame_id = '/ego_racecar/laser'
-        t.child_frame_id = '/ego_racecar/odom'
+        t.child_frame_id = '/ego_racecar/base_link'
+        # t.child_frame_id = '/ego_racecar/odom'
         # translation
         t.transform.translation.x = pose[0]
         t.transform.translation.y = pose[1]
