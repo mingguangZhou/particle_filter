@@ -141,6 +141,7 @@ class ParticleFiler(Node):
         # particle poses and weights
         self.inferred_pose = None
         self.particle_indices = np.arange(self.MAX_PARTICLES)
+        # particles[i] = [x_base, y_base, theta_base] in map frame
         self.particles = np.zeros((self.MAX_PARTICLES, 3))
         self.weights = np.ones(self.MAX_PARTICLES) / float(self.MAX_PARTICLES)
 
@@ -191,6 +192,11 @@ class ParticleFiler(Node):
             self.clicked_pose,
             1)
 
+        # laser extrinsic relative to base_link
+        self.laser_offset_x = 0.27   # meters (adjust to your sim)
+        self.laser_offset_y = 0.0
+        self.laser_offset_yaw = 0.0
+        
         self.get_logger().info('Finished initializing, waiting on messages...')
 
         self._initialize_from_sim_start()
@@ -213,6 +219,32 @@ class ParticleFiler(Node):
 
         self.get_logger().info('Initializing PF from simulator start pose')
         self.initialize_particles_pose(msg.pose.pose)
+
+    def base_to_laser(self, base_particles):
+        '''
+        Convert base_link particle poses to laser poses.
+        base_particles: Nx3 [x, y, theta] (base_link)
+        returns: Nx3 [x, y, theta] (laser)
+        '''
+        laser_particles = np.zeros_like(base_particles)
+
+        cos_t = np.cos(base_particles[:,2])
+        sin_t = np.sin(base_particles[:,2])
+
+        laser_particles[:,0] = (
+            base_particles[:,0]
+            + cos_t * self.laser_offset_x
+            - sin_t * self.laser_offset_y
+        )
+        laser_particles[:,1] = (
+            base_particles[:,1]
+            + sin_t * self.laser_offset_x
+            + cos_t * self.laser_offset_y
+        )
+        laser_particles[:,2] = base_particles[:,2] + self.laser_offset_yaw
+
+        return laser_particles
+
 
     def get_omap(self):
         '''
@@ -265,9 +297,7 @@ class ParticleFiler(Node):
         # header
         t.header.stamp = stamp
         t.header.frame_id = '/map'
-        # t.child_frame_id = '/ego_racecar/laser'
         t.child_frame_id = '/ego_racecar/base_link'
-        # t.child_frame_id = '/ego_racecar/odom'
         # translation
         t.transform.translation.x = pose[0]
         t.transform.translation.y = pose[1]
@@ -573,7 +603,9 @@ class ParticleFiler(Node):
                                         optimizations to CDDT which simultaneously performs ray casting
                                         in two directions, reducing the amount of work by roughly a third
         '''
-        
+        # Convert base_link particles → laser particles
+        laser_particles = self.base_to_laser(proposal_dist)
+
         num_rays = self.downsampled_angles.shape[0]
         # only allocate buffers once to avoid slowness
         if self.first_sensor_update:
@@ -605,7 +637,9 @@ class ParticleFiler(Node):
             if self.SHOW_FINE_TIMING:
                 t_start = time.time()
             # this version demonstrates what this would look like with coordinate space conversion pushed to rangelib
-            self.queries[:,:] = proposal_dist[:,:]
+            # self.queries[:,:] = proposal_dist[:,:]
+            self.queries[:,:] = laser_particles[:,:]
+
             if self.SHOW_FINE_TIMING:
                 t_init = time.time()
             self.range_method.calc_range_repeat_angles(self.queries, self.downsampled_angles, self.ranges)
@@ -626,9 +660,14 @@ class ParticleFiler(Node):
         elif self.RANGELIB_VAR == VAR_CALC_RANGE_MANY_EVAL_SENSOR:
             # this version demonstrates what this would look like with coordinate space conversion pushed to rangelib
             # this part is inefficient since it requires a lot of effort to construct this redundant array
-            self.queries[:,0] = np.repeat(proposal_dist[:,0], num_rays)
-            self.queries[:,1] = np.repeat(proposal_dist[:,1], num_rays)
-            self.queries[:,2] = np.repeat(proposal_dist[:,2], num_rays)
+            # self.queries[:,0] = np.repeat(proposal_dist[:,0], num_rays)
+            # self.queries[:,1] = np.repeat(proposal_dist[:,1], num_rays)
+            # self.queries[:,2] = np.repeat(proposal_dist[:,2], num_rays)
+
+            self.queries[:,0] = np.repeat(laser_particles[:,0], num_rays)
+            self.queries[:,1] = np.repeat(laser_particles[:,1], num_rays)
+            self.queries[:,2] = np.repeat(laser_particles[:,2], num_rays)
+
             self.queries[:,2] += self.tiled_angles
 
             self.range_method.calc_range_many(self.queries, self.ranges)
