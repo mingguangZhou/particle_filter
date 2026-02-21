@@ -199,7 +199,7 @@ class ParticleFiler(Node):
         
         self.get_logger().info('Finished initializing, waiting on messages...')
 
-        self._initialize_from_sim_start()
+        # self._initialize_from_sim_start()
 
     def _initialize_from_sim_start(self):
         msg = PoseWithCovarianceStamped()
