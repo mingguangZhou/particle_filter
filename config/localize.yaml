@@ -3,7 +3,7 @@ particle_filter:
     use_sim_time: true
     # topic names
     scan_topic: '/scan'
-    odometry_topic: '/ego_racecar/odom'
+    odometry_topic: '/odom'
     # range data downsampling
     angle_step: 18
     max_particles: 4000
@@ -12,7 +12,7 @@ particle_filter:
     viz: 1
     max_viz_particles: 60
     # ray marching method
-    range_method: 'rm'
+    range_method: 'rmgpu'
     theta_discretization: 112
     # range data filtering
     max_range: 10
