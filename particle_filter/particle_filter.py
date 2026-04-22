@@ -445,11 +445,10 @@ class ParticleFiler(Node):
         self.get_logger().info(str([pose.position.x, pose.position.y]))
         self.state_lock.acquire()
         self.weights = np.ones(self.MAX_PARTICLES) / float(self.MAX_PARTICLES)
-        
         # self.particles[:,0] = pose.position.x + np.random.normal(loc=0.0,scale=0.5,size=self.MAX_PARTICLES)
         # self.particles[:,1] = pose.position.y + np.random.normal(loc=0.0,scale=0.5,size=self.MAX_PARTICLES)
         # self.particles[:,2] = Utils.quaternion_to_angle(pose.orientation) + np.random.normal(loc=0.0,scale=0.4,size=self.MAX_PARTICLES)
-        
+
         theta = Utils.quaternion_to_angle(pose.orientation)
         sigma_x = 0.5
         sigma_y = 0.5
