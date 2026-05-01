@@ -392,9 +392,14 @@ class ParticleFiler(Node):
 
         if self.pub_fake_scan.get_subscription_count() > 0 and isinstance(self.ranges, np.ndarray):
             # generate the scan from the point of view of the inferred position for visualization
-            self.viz_queries[:,0] = self.inferred_pose[0]
-            self.viz_queries[:,1] = self.inferred_pose[1]
-            self.viz_queries[:,2] = self.downsampled_angles + self.inferred_pose[2]
+            
+            # convert back to laser pose
+            laser_pose = self.base_to_laser(self.inferred_pose.reshape(1, 3))[0]
+            
+            self.viz_queries[:, 0] = laser_pose[0]
+            self.viz_queries[:, 1] = laser_pose[1]
+            self.viz_queries[:, 2] = self.downsampled_angles + laser_pose[2]
+
             self.range_method.calc_range_many(self.viz_queries, self.viz_ranges)
             self.publish_scan(self.downsampled_angles, self.viz_ranges)
 
@@ -407,16 +412,20 @@ class ParticleFiler(Node):
         self.particle_pub.publish(pa)
 
     def publish_scan(self, angles, ranges):
-        # publish the given angels and ranges as a laser scan message
+        # Publish the predicted/fake scan as a LaserScan message.
         ls = LaserScan()
         ls.header.stamp = self.last_stamp
-        ls.header.frame_id = '/ego_racecar/laser'
-        ls.angle_min = np.min(angles)
-        ls.angle_max = np.max(angles)
-        ls.angle_increment = np.abs(angles[0] - angles[1])
-        ls.range_min = 0
-        ls.range_max = np.max(ranges)
-        ls.ranges = ranges
+        ls.header.frame_id = 'ego_racecar/laser'
+
+        ls.angle_min = float(np.min(angles))
+        ls.angle_max = float(np.max(angles))
+        ls.angle_increment = float(abs(angles[1] - angles[0]))
+
+        ls.range_min = 0.0
+        ls.range_max = float(np.max(ranges))
+
+        ls.ranges = [float(r) for r in ranges]
+
         self.pub_fake_scan.publish(ls)
 
     def lidarCB(self, msg):
