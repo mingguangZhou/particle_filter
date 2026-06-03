@@ -3,12 +3,12 @@ particle_filter:
     use_sim_time: true
     # topic names
     scan_topic: '/scan'
-    odometry_topic: '/odom'
+    odometry_topic: '/ego_racecar/odom'
     # frame ids
     # Keep these equal to the old hardcoded values by default.
     map_frame: '/map'
-    base_frame: '/base_link'
-    laser_frame: '/laser'
+    base_frame: '/ego_racecar/base_link'
+    laser_frame: '/ego_racecar/laser'
     # laser extrinsic relative to base_frame
     laser_offset_x: 0.27
     laser_offset_y: 0.0

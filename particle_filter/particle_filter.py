@@ -85,6 +85,12 @@ class ParticleFiler(Node):
         self.declare_parameter('motion_dispersion_theta')
         self.declare_parameter('scan_topic')
         self.declare_parameter('odometry_topic')
+        self.declare_parameter('map_frame')
+        self.declare_parameter('base_frame')
+        self.declare_parameter('laser_frame')
+        self.declare_parameter('laser_offset_x')
+        self.declare_parameter('laser_offset_y')
+        self.declare_parameter('laser_offset_yaw')
 
         # parameters
         self.ANGLE_STEP           = self.get_parameter('angle_step').value
@@ -110,6 +116,14 @@ class ParticleFiler(Node):
         self.MOTION_DISPERSION_X     = self.get_parameter('motion_dispersion_x').value
         self.MOTION_DISPERSION_Y     = self.get_parameter('motion_dispersion_y').value
         self.MOTION_DISPERSION_THETA = self.get_parameter('motion_dispersion_theta').value
+
+        # frame ids / laser extrinsic
+        self.MAP_FRAME = self.get_parameter('map_frame').value
+        self.BASE_FRAME = self.get_parameter('base_frame').value
+        self.LASER_FRAME = self.get_parameter('laser_frame').value
+        self.laser_offset_x = self.get_parameter('laser_offset_x').value
+        self.laser_offset_y = self.get_parameter('laser_offset_y').value
+        self.laser_offset_yaw = self.get_parameter('laser_offset_yaw').value
         
         # various data containers used in the MCL algorithm
         self.MAX_RANGE_PX = None
@@ -192,18 +206,13 @@ class ParticleFiler(Node):
             self.clicked_pose,
             1)
 
-        # laser extrinsic relative to base_link
-        self.laser_offset_x = 0.27   # meters (adjust to your sim)
-        self.laser_offset_y = 0.0
-        self.laser_offset_yaw = 0.0
-        
         self.get_logger().info('Finished initializing, waiting on messages...')
 
         # self._initialize_from_sim_start()
 
     def _initialize_from_sim_start(self):
         msg = PoseWithCovarianceStamped()
-        msg.header.frame_id = 'map'
+        msg.header.frame_id = self.MAP_FRAME
         msg.header.stamp = self.get_clock().now().to_msg()
 
         msg.pose.pose.position.x = 0.0
@@ -296,8 +305,8 @@ class ParticleFiler(Node):
         t = TransformStamped()
         # header
         t.header.stamp = stamp
-        t.header.frame_id = '/map'
-        t.child_frame_id = '/ego_racecar/base_link'
+        t.header.frame_id = self.MAP_FRAME
+        t.child_frame_id = self.BASE_FRAME
         # translation
         t.transform.translation.x = pose[0]
         t.transform.translation.y = pose[1]
@@ -313,7 +322,7 @@ class ParticleFiler(Node):
         if self.PUBLISH_ODOM:
             odom = Odometry()
             odom.header.stamp = self.get_clock().now().to_msg()
-            odom.header.frame_id = '/map'
+            odom.header.frame_id = self.MAP_FRAME
             odom.pose.pose.position.x = pose[0]
             odom.pose.pose.position.y = pose[1]
             odom.pose.pose.orientation = Utils.angle_to_quaternion(pose[2])
@@ -374,7 +383,7 @@ class ParticleFiler(Node):
             # Publish the inferred pose for visualization
             ps = PoseStamped()
             ps.header.stamp = self.get_clock().now().to_msg()
-            ps.header.frame_id = '/map'
+            ps.header.frame_id = self.MAP_FRAME
             ps.pose.position.x = self.inferred_pose[0]
             ps.pose.position.y = self.inferred_pose[1]
             ps.pose.orientation = Utils.angle_to_quaternion(self.inferred_pose[2])
@@ -407,7 +416,7 @@ class ParticleFiler(Node):
         # publish the given particles as a PoseArray object
         pa = PoseArray()
         pa.header.stamp = self.get_clock().now().to_msg()
-        pa.header.frame_id = '/map'
+        pa.header.frame_id = self.MAP_FRAME
         pa.poses = Utils.particles_to_poses(particles)
         self.particle_pub.publish(pa)
 
@@ -415,7 +424,7 @@ class ParticleFiler(Node):
         # Publish the predicted/fake scan as a LaserScan message.
         ls = LaserScan()
         ls.header.stamp = self.last_stamp
-        ls.header.frame_id = 'ego_racecar/laser'
+        ls.header.frame_id = self.LASER_FRAME
 
         ls.angle_min = float(np.min(angles))
         ls.angle_max = float(np.max(angles))
