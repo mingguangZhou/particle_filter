@@ -92,6 +92,27 @@ class ParticleFiler(Node):
         self.declare_parameter('laser_offset_y')
         self.declare_parameter('laser_offset_yaw')
 
+        # PF health monitor parameters.
+        # These do not affect the PF pose, particles, TF, or /pf/pose/odom output.
+        # They only drive the diagnostic /pf/health topic:
+        # [status, static_match_ratio, static_scan_error_median, obstacle_short_ratio,
+        #  xy_spread, longitudinal_residual, lateral_residual, yaw_residual, n_eff_ratio]
+        self.declare_parameter('good_match_ratio', 0.70)
+        self.declare_parameter('degraded_match_ratio', 0.45)
+        self.declare_parameter('good_scan_error_m', 0.20)
+        self.declare_parameter('degraded_scan_error_m', 0.45)
+        self.declare_parameter('obstacle_short_error_m', 0.50)
+        self.declare_parameter('max_good_xy_spread_m', 0.25)
+        self.declare_parameter('max_degraded_xy_spread_m', 0.60)
+        self.declare_parameter('max_good_lateral_residual_m', 0.10)
+        self.declare_parameter('max_degraded_lateral_residual_m', 0.35)
+        self.declare_parameter('max_good_yaw_residual_rad', 0.15)
+        self.declare_parameter('max_degraded_yaw_residual_rad', 0.45)
+        self.declare_parameter('lost_bad_count', 8)
+        self.declare_parameter('degraded_bad_count', 5)
+        self.declare_parameter('recover_good_count', 15)
+        self.declare_parameter('manual_reset_grace_updates', 10)
+
         # parameters
         self.ANGLE_STEP           = self.get_parameter('angle_step').value
         self.MAX_PARTICLES        = self.get_parameter('max_particles').value
@@ -124,6 +145,36 @@ class ParticleFiler(Node):
         self.laser_offset_x = self.get_parameter('laser_offset_x').value
         self.laser_offset_y = self.get_parameter('laser_offset_y').value
         self.laser_offset_yaw = self.get_parameter('laser_offset_yaw').value
+
+        # PF health monitor parameters
+        self.GOOD_MATCH_RATIO = float(self.get_parameter('good_match_ratio').value)
+        self.DEGRADED_MATCH_RATIO = float(self.get_parameter('degraded_match_ratio').value)
+        self.GOOD_SCAN_ERROR_M = float(self.get_parameter('good_scan_error_m').value)
+        self.DEGRADED_SCAN_ERROR_M = float(self.get_parameter('degraded_scan_error_m').value)
+        self.OBSTACLE_SHORT_ERROR_M = float(self.get_parameter('obstacle_short_error_m').value)
+        self.MAX_GOOD_XY_SPREAD_M = float(self.get_parameter('max_good_xy_spread_m').value)
+        self.MAX_DEGRADED_XY_SPREAD_M = float(self.get_parameter('max_degraded_xy_spread_m').value)
+        self.MAX_GOOD_LATERAL_RESIDUAL_M = float(self.get_parameter('max_good_lateral_residual_m').value)
+        self.MAX_DEGRADED_LATERAL_RESIDUAL_M = float(self.get_parameter('max_degraded_lateral_residual_m').value)
+        self.MAX_GOOD_YAW_RESIDUAL_RAD = float(self.get_parameter('max_good_yaw_residual_rad').value)
+        self.MAX_DEGRADED_YAW_RESIDUAL_RAD = float(self.get_parameter('max_degraded_yaw_residual_rad').value)
+        self.LOST_BAD_COUNT = int(self.get_parameter('lost_bad_count').value)
+        self.DEGRADED_BAD_COUNT = int(self.get_parameter('degraded_bad_count').value)
+        self.RECOVER_GOOD_COUNT = int(self.get_parameter('recover_good_count').value)
+        self.MANUAL_RESET_GRACE_UPDATES = int(self.get_parameter('manual_reset_grace_updates').value)
+
+        # Status codes published on /pf/health
+        self.PF_STATUS_GOOD = 1
+        self.PF_STATUS_DEGRADED = 2
+        self.PF_STATUS_INVALID = 3
+        self.health_status = self.PF_STATUS_GOOD
+        self.good_count = 0
+        self.degraded_count = 0
+        self.invalid_count = 0
+        self.raw_pose = None
+        self.prev_raw_pose = None
+        self.last_health_metrics = None
+        self.manual_reset_grace_remaining = 0
         
         # various data containers used in the MCL algorithm
         self.MAX_RANGE_PX = None
@@ -176,6 +227,7 @@ class ParticleFiler(Node):
         self.pose_pub = self.create_publisher(PoseStamped, '/pf/viz/inferred_pose', 1)
         self.particle_pub = self.create_publisher(PoseArray, '/pf/viz/particles', 1)
         self.pub_fake_scan = self.create_publisher(LaserScan, '/pf/viz/fake_scan', 1)
+        self.health_pub = self.create_publisher(Float32MultiArray, '/pf/health', 1)
         self.rect_pub = self.create_publisher(PolygonStamped, '/pf/viz/poly1', 1)
 
         if self.PUBLISH_ODOM:
@@ -520,6 +572,11 @@ class ParticleFiler(Node):
             np.cos(self.particles[:,2])
         )
 
+        # Reset only health bookkeeping. This does not affect particles, TF, or the
+        # original localization output; it only prevents the user-requested manual
+        # pose reset from being reported as a localization jump in /pf/health.
+        self.reset_health_after_manual_pose(pose.position.x, pose.position.y, theta)
+
         self.state_lock.release()
 
     def initialize_global(self):
@@ -540,6 +597,10 @@ class ParticleFiler(Node):
         Utils.map_to_world(permissible_states, self.map_info)
         self.particles = permissible_states
         self.weights[:] = 1.0 / self.MAX_PARTICLES
+
+        # Global initialization has no single trusted pose. Reset health history only.
+        self.reset_health_after_global_initialization()
+
         self.state_lock.release()
 
     def precompute_sensor_model(self):
@@ -780,6 +841,310 @@ class ParticleFiler(Node):
         # returns the expected value of the pose given the particle distribution
         return np.dot(self.particles.transpose(), self.weights)
 
+    def angle_diff(self, target_angle, source_angle):
+        """Return wrapped angular difference target - source."""
+        return np.arctan2(np.sin(target_angle - source_angle), np.cos(target_angle - source_angle))
+
+    def reset_health_after_manual_pose(self, x, y, theta):
+        """Reset only health bookkeeping after an explicit RViz /initialpose reset."""
+        pose_np = np.array([x, y, theta], dtype=np.float64)
+        pose_np[2] = np.arctan2(np.sin(pose_np[2]), np.cos(pose_np[2]))
+
+        self.raw_pose = np.copy(pose_np)
+        self.prev_raw_pose = np.copy(pose_np)
+        self.health_status = self.PF_STATUS_GOOD
+        self.good_count = self.RECOVER_GOOD_COUNT
+        self.degraded_count = 0
+        self.invalid_count = 0
+        self.manual_reset_grace_remaining = self.MANUAL_RESET_GRACE_UPDATES
+        self.last_health_metrics = {
+            'status': float(self.health_status),
+            'static_match_ratio': 1.0,
+            'static_scan_error_median': 0.0,
+            'obstacle_short_ratio': 0.0,
+            'xy_spread': 0.0,
+            'longitudinal_residual': 0.0,
+            'lateral_residual': 0.0,
+            'yaw_residual': 0.0,
+            'n_eff_ratio': 1.0,
+        }
+
+        self.get_logger().info(
+            'PF health reset after manual initial pose; '
+            f'ignoring jump evidence for {self.manual_reset_grace_remaining} update(s).')
+
+    def reset_health_after_global_initialization(self):
+        """Reset health bookkeeping after global particle initialization."""
+        self.raw_pose = None
+        self.prev_raw_pose = None
+        self.health_status = self.PF_STATUS_INVALID
+        self.good_count = 0
+        self.degraded_count = 0
+        self.invalid_count = self.LOST_BAD_COUNT
+        self.manual_reset_grace_remaining = 0
+        self.last_health_metrics = {
+            'status': float(self.health_status),
+            'static_match_ratio': 0.0,
+            'static_scan_error_median': float('inf'),
+            'obstacle_short_ratio': 0.0,
+            'xy_spread': float('inf'),
+            'longitudinal_residual': 0.0,
+            'lateral_residual': 0.0,
+            'yaw_residual': 0.0,
+            'n_eff_ratio': 0.0,
+        }
+
+    def compute_expected_scan_for_pose(self, base_pose):
+        """Ray-cast the static map from a base_link pose and return expected laser ranges."""
+        if not isinstance(self.downsampled_angles, np.ndarray):
+            return None
+        if not hasattr(self, 'viz_queries') or not hasattr(self, 'viz_ranges'):
+            return None
+
+        laser_pose = self.base_to_laser(base_pose.reshape(1, 3))[0]
+        self.viz_queries[:, 0] = laser_pose[0]
+        self.viz_queries[:, 1] = laser_pose[1]
+        self.viz_queries[:, 2] = self.downsampled_angles + laser_pose[2]
+        self.range_method.calc_range_many(self.viz_queries, self.viz_ranges)
+        return np.copy(self.viz_ranges)
+
+    def compute_pf_odom_motion_residuals(self, raw_pose, odom_action):
+        """Compare raw PF motion with raw ego odometry in the previous car frame.
+
+        odom_action is the local-frame delta computed from the subscribed raw
+        odometry_topic. It must not come from /pf/pose/odom.
+        """
+        if not isinstance(self.prev_raw_pose, np.ndarray):
+            return 0.0, 0.0, 0.0
+
+        dx_map = raw_pose[0] - self.prev_raw_pose[0]
+        dy_map = raw_pose[1] - self.prev_raw_pose[1]
+
+        theta_prev = self.prev_raw_pose[2]
+        c = np.cos(theta_prev)
+        s = np.sin(theta_prev)
+
+        # Raw PF displacement expressed in previous base_link frame.
+        pf_longitudinal = c * dx_map + s * dy_map
+        pf_lateral = -s * dx_map + c * dy_map
+        pf_yaw = self.angle_diff(raw_pose[2], self.prev_raw_pose[2])
+
+        odom_longitudinal = float(odom_action[0])
+        odom_lateral = float(odom_action[1])
+        odom_yaw = float(odom_action[2])
+
+        longitudinal_residual = pf_longitudinal - odom_longitudinal
+        lateral_residual = pf_lateral - odom_lateral
+        yaw_residual = self.angle_diff(pf_yaw, odom_yaw)
+
+        return (
+            float(longitudinal_residual),
+            float(lateral_residual),
+            float(yaw_residual),
+        )
+
+    def evaluate_pf_health(self, raw_pose, observation, odom_action):
+        """Evaluate localization health without changing PF pose/particles/output.
+
+        This diagnostic logic is intentionally side-effect-light:
+        - it does not modify particles;
+        - it does not modify inferred_pose;
+        - it does not decide which pose is published on TF or /pf/pose/odom.
+
+        /pf/health layout:
+        [0] status: 1=GOOD, 2=DEGRADED_BUT_USABLE, 3=INVALID
+        [1] static_match_ratio
+        [2] static_scan_error_median [m]
+        [3] obstacle_short_ratio
+        [4] xy_spread [m]
+        [5] longitudinal_residual [m]
+        [6] lateral_residual [m]
+        [7] yaw_residual [rad]
+        [8] n_eff_ratio
+        """
+        expected_ranges = self.compute_expected_scan_for_pose(raw_pose)
+        if expected_ranges is None:
+            metrics = {
+                'status': float(self.health_status),
+                'static_match_ratio': 0.0,
+                'static_scan_error_median': float('inf'),
+                'obstacle_short_ratio': 0.0,
+                'xy_spread': float('inf'),
+                'longitudinal_residual': 0.0,
+                'lateral_residual': 0.0,
+                'yaw_residual': 0.0,
+                'n_eff_ratio': 0.0,
+            }
+            self.last_health_metrics = metrics
+            return metrics
+
+        # --- Static-map scan consistency with obstacle-like short rays filtered out ---
+        obs = np.asarray(observation, dtype=np.float32)
+        pred = np.asarray(expected_ranges, dtype=np.float32)
+        finite = np.isfinite(obs) & np.isfinite(pred) & (obs > 0.0) & (pred > 0.0)
+
+        scan_has_static_candidates = False
+        if np.any(finite):
+            diff = obs[finite] - pred[finite]
+
+            # Real scan much shorter than map prediction: likely temporary obstacle/opponent.
+            obstacle_like = diff < -self.OBSTACLE_SHORT_ERROR_M
+            obstacle_short_ratio = float(np.mean(obstacle_like))
+
+            static_candidate = ~obstacle_like
+            scan_has_static_candidates = bool(np.any(static_candidate))
+            if scan_has_static_candidates:
+                static_abs_err = np.abs(diff[static_candidate])
+                static_scan_error_median = float(np.median(static_abs_err))
+                static_match_ratio = float(np.mean(static_abs_err < self.GOOD_SCAN_ERROR_M))
+            else:
+                static_scan_error_median = float('inf')
+                static_match_ratio = 0.0
+        else:
+            obstacle_short_ratio = 0.0
+            static_scan_error_median = float('inf')
+            static_match_ratio = 0.0
+
+        # --- Particle position uncertainty ---
+        cov = np.cov(self.particles, rowvar=False, ddof=0, aweights=self.weights)
+        xy_spread = float(np.sqrt(max(cov[0, 0] + cov[1, 1], 0.0)))
+
+        # Effective particle count is diagnostic only for now.
+        n_eff = 1.0 / max(float(np.sum(np.square(self.weights))), 1e-12)
+        n_eff_ratio = float(n_eff / float(self.MAX_PARTICLES))
+
+        # --- Motion consistency: raw PF delta vs raw ego odometry delta ---
+        longitudinal_residual, lateral_residual, yaw_residual = (
+            self.compute_pf_odom_motion_residuals(raw_pose, odom_action)
+        )
+
+        if self.manual_reset_grace_remaining > 0:
+            self.health_status = self.PF_STATUS_GOOD
+            self.good_count = self.RECOVER_GOOD_COUNT
+            self.degraded_count = 0
+            self.invalid_count = 0
+            self.manual_reset_grace_remaining -= 1
+
+            metrics = {
+                'status': float(self.health_status),
+                'static_match_ratio': static_match_ratio,
+                'static_scan_error_median': static_scan_error_median,
+                'obstacle_short_ratio': obstacle_short_ratio,
+                'xy_spread': xy_spread,
+                'longitudinal_residual': 0.0,
+                'lateral_residual': 0.0,
+                'yaw_residual': 0.0,
+                'n_eff_ratio': n_eff_ratio,
+            }
+            self.last_health_metrics = metrics
+            self.prev_raw_pose = np.copy(raw_pose)
+            return metrics
+
+        scan_good_evidence = (
+            scan_has_static_candidates and
+            static_match_ratio >= self.GOOD_MATCH_RATIO and
+            static_scan_error_median <= self.GOOD_SCAN_ERROR_M
+        )
+
+        scan_bad_evidence = (
+            scan_has_static_candidates and
+            (
+                static_match_ratio < self.DEGRADED_MATCH_RATIO or
+                static_scan_error_median > self.DEGRADED_SCAN_ERROR_M
+            )
+        )
+
+        uncertainty_good_evidence = xy_spread <= self.MAX_GOOD_XY_SPREAD_M
+        uncertainty_invalid_evidence = xy_spread > self.MAX_DEGRADED_XY_SPREAD_M
+
+        motion_good_evidence = (
+            abs(lateral_residual) <= self.MAX_GOOD_LATERAL_RESIDUAL_M and
+            abs(yaw_residual) <= self.MAX_GOOD_YAW_RESIDUAL_RAD
+        )
+
+        motion_invalid_evidence = (
+            abs(lateral_residual) > self.MAX_DEGRADED_LATERAL_RESIDUAL_M or
+            abs(yaw_residual) > self.MAX_DEGRADED_YAW_RESIDUAL_RAD
+        )
+
+        good_evidence = (
+            scan_good_evidence and
+            uncertainty_good_evidence and
+            motion_good_evidence
+        )
+
+        # Scan mismatch alone is treated as DEGRADED, not INVALID. This keeps the
+        # status robust to temporary scan/raycast issues and moving obstacles.
+        invalid_evidence = (
+            uncertainty_invalid_evidence or
+            motion_invalid_evidence
+        )
+
+        if good_evidence:
+            self.good_count += 1
+            self.degraded_count = 0
+            self.invalid_count = 0
+        elif invalid_evidence:
+            self.good_count = 0
+            self.degraded_count += 1
+            self.invalid_count += 1
+        else:
+            # Not clean enough for GOOD, but not physically bad enough for INVALID.
+            # This includes scan_bad_evidence with stable particles/motion.
+            self.good_count = 0
+            self.degraded_count += 1
+            self.invalid_count = max(0, self.invalid_count - 1)
+
+        if self.invalid_count >= self.LOST_BAD_COUNT:
+            self.health_status = self.PF_STATUS_INVALID
+        elif self.health_status == self.PF_STATUS_INVALID:
+            if self.good_count >= self.RECOVER_GOOD_COUNT:
+                self.health_status = self.PF_STATUS_GOOD
+            elif self.degraded_count >= self.RECOVER_GOOD_COUNT and not invalid_evidence:
+                self.health_status = self.PF_STATUS_DEGRADED
+        elif self.health_status == self.PF_STATUS_DEGRADED:
+            if self.good_count >= self.RECOVER_GOOD_COUNT:
+                self.health_status = self.PF_STATUS_GOOD
+            elif self.invalid_count >= self.LOST_BAD_COUNT:
+                self.health_status = self.PF_STATUS_INVALID
+        else:  # GOOD
+            if self.degraded_count >= self.DEGRADED_BAD_COUNT:
+                self.health_status = self.PF_STATUS_DEGRADED
+
+        metrics = {
+            'status': float(self.health_status),
+            'static_match_ratio': static_match_ratio,
+            'static_scan_error_median': static_scan_error_median,
+            'obstacle_short_ratio': obstacle_short_ratio,
+            'xy_spread': xy_spread,
+            'longitudinal_residual': longitudinal_residual,
+            'lateral_residual': lateral_residual,
+            'yaw_residual': yaw_residual,
+            'n_eff_ratio': n_eff_ratio,
+        }
+        self.last_health_metrics = metrics
+        self.prev_raw_pose = np.copy(raw_pose)
+        return metrics
+
+    def publish_health(self):
+        """Publish current PF health metrics as Float32MultiArray."""
+        if not isinstance(self.last_health_metrics, dict):
+            return
+
+        msg = Float32MultiArray()
+        msg.data = [
+            float(self.last_health_metrics['status']),
+            float(self.last_health_metrics['static_match_ratio']),
+            float(self.last_health_metrics['static_scan_error_median']),
+            float(self.last_health_metrics['obstacle_short_ratio']),
+            float(self.last_health_metrics['xy_spread']),
+            float(self.last_health_metrics['longitudinal_residual']),
+            float(self.last_health_metrics['lateral_residual']),
+            float(self.last_health_metrics['yaw_residual']),
+            float(self.last_health_metrics['n_eff_ratio']),
+        ]
+        self.health_pub.publish(msg)
+
     def update(self):
         '''
         Apply the MCL function to update particle filter state. 
@@ -804,17 +1169,34 @@ class ParticleFiler(Node):
 
                 # compute the expected value of the robot pose
                 self.inferred_pose = self.expected_pose()
+
+                # Health monitor only. This does not affect particles, inferred_pose,
+                # TF output, or /pf/pose/odom output.
+                self.raw_pose = np.copy(self.inferred_pose)
+                health_metrics = self.evaluate_pf_health(self.raw_pose, observation, action)
+
                 self.state_lock.release()
                 t2 = time.time()
 
-                # publish transformation frame based on inferred pose
+                # publish transformation frame based on the raw inferred pose,
+                # preserving the original particle_filter behavior.
                 self.publish_tf(self.inferred_pose, self.last_stamp)
+                self.publish_health()
 
                 # this is for tracking particle filter speed
                 ips = 1.0 / (t2 - t1)
                 self.smoothing.append(ips)
                 if self.iters % 10 == 0:
-                    self.get_logger().info(str(['iters per sec:', int(self.timer.fps()), ' possible:', int(self.smoothing.mean())]))
+                    self.get_logger().info(str([
+                        'iters per sec:', int(self.timer.fps()),
+                        ' possible:', int(self.smoothing.mean()),
+                        'pf_status:', int(health_metrics['status']),
+                        'static_match:', round(health_metrics['static_match_ratio'], 3),
+                        'static_scan_err:', round(health_metrics['static_scan_error_median'], 3),
+                        'obs_short:', round(health_metrics['obstacle_short_ratio'], 3),
+                        'xy_spread:', round(health_metrics['xy_spread'], 3),
+                        'lat_res:', round(health_metrics['lateral_residual'], 3),
+                        'yaw_res:', round(health_metrics['yaw_residual'], 3)]))
 
                 self.visualize()
 
