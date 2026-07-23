@@ -55,16 +55,16 @@ particle_filter:
 
     # Static map scan consistency. Obstacle-short rays are filtered out before
     # static_match_ratio and static_scan_error_median are computed.
-    good_match_ratio: 0.70
-    degraded_match_ratio: 0.45
-    good_scan_error_m: 0.20
-    degraded_scan_error_m: 0.45
+    good_match_ratio: 0.85
+    degraded_match_ratio: 0.75
+    good_scan_error_m: 0.10
+    degraded_scan_error_m: 0.20
     obstacle_short_error_m: 0.50
 
-    # Particle cloud position spread. Based on current simulator logs, 0.25 m
+    # Particle cloud position spread. 
     # was too tight and caused GOOD/DEGRADED switching during otherwise good scans.
-    max_good_xy_spread_m: 0.35
-    max_degraded_xy_spread_m: 0.80
+    max_good_xy_spread_m: 0.25
+    max_degraded_xy_spread_m: 0.50
 
     # Raw PF delta vs raw ego odometry delta consistency.
     # The subscribed odometry_topic must be raw car/sim odom, not /pf/pose/odom.
@@ -82,6 +82,17 @@ particle_filter:
     # Grace updates after RViz /initialpose reset. During this window, health
     # stays GOOD and the intentional manual pose jump is not counted as failure.
     manual_reset_grace_updates: 10
+
+    # Obstacle-present GOOD override.
+    # If obstacle_short_ratio is above this value and static_match_ratio is very high,
+    # localization can still be GOOD even if xy_spread is above max_good_xy_spread_m,
+    # as long as xy_spread does not exceed max_degraded_xy_spread_m.
+    obstacle_present_ratio: 0.03
+    obstacle_good_match_ratio: 0.90
+
+    # If status remains DEGRADED for this many consecutive PF update cycles,
+    # escalate status to INVALID.
+    max_degraded_count: 50
 
 map_server:
   ros__parameters:

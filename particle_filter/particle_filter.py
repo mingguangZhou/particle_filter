@@ -102,6 +102,11 @@ class ParticleFiler(Node):
         self.declare_parameter('good_scan_error_m', 0.20)
         self.declare_parameter('degraded_scan_error_m', 0.45)
         self.declare_parameter('obstacle_short_error_m', 0.50)
+        # If obstacle-like short rays are present but the remaining static-map
+        # scan match is very strong, the pose can still be classified as GOOD
+        # even when xy_spread is above the normal GOOD threshold.
+        self.declare_parameter('obstacle_present_ratio', 0.03)
+        self.declare_parameter('obstacle_good_match_ratio', 0.90)
         self.declare_parameter('max_good_xy_spread_m', 0.25)
         self.declare_parameter('max_degraded_xy_spread_m', 0.60)
         self.declare_parameter('max_good_lateral_residual_m', 0.10)
@@ -110,6 +115,9 @@ class ParticleFiler(Node):
         self.declare_parameter('max_degraded_yaw_residual_rad', 0.45)
         self.declare_parameter('lost_bad_count', 8)
         self.declare_parameter('degraded_bad_count', 5)
+        # If the published health status remains DEGRADED for too long,
+        # escalate to INVALID so downstream modules can stop relying on it.
+        self.declare_parameter('max_degraded_count', 20)
         self.declare_parameter('recover_good_count', 15)
         self.declare_parameter('manual_reset_grace_updates', 10)
 
@@ -152,6 +160,8 @@ class ParticleFiler(Node):
         self.GOOD_SCAN_ERROR_M = float(self.get_parameter('good_scan_error_m').value)
         self.DEGRADED_SCAN_ERROR_M = float(self.get_parameter('degraded_scan_error_m').value)
         self.OBSTACLE_SHORT_ERROR_M = float(self.get_parameter('obstacle_short_error_m').value)
+        self.OBSTACLE_PRESENT_RATIO = float(self.get_parameter('obstacle_present_ratio').value)
+        self.OBSTACLE_GOOD_MATCH_RATIO = float(self.get_parameter('obstacle_good_match_ratio').value)
         self.MAX_GOOD_XY_SPREAD_M = float(self.get_parameter('max_good_xy_spread_m').value)
         self.MAX_DEGRADED_XY_SPREAD_M = float(self.get_parameter('max_degraded_xy_spread_m').value)
         self.MAX_GOOD_LATERAL_RESIDUAL_M = float(self.get_parameter('max_good_lateral_residual_m').value)
@@ -160,6 +170,7 @@ class ParticleFiler(Node):
         self.MAX_DEGRADED_YAW_RESIDUAL_RAD = float(self.get_parameter('max_degraded_yaw_residual_rad').value)
         self.LOST_BAD_COUNT = int(self.get_parameter('lost_bad_count').value)
         self.DEGRADED_BAD_COUNT = int(self.get_parameter('degraded_bad_count').value)
+        self.MAX_DEGRADED_COUNT = int(self.get_parameter('max_degraded_count').value)
         self.RECOVER_GOOD_COUNT = int(self.get_parameter('recover_good_count').value)
         self.MANUAL_RESET_GRACE_UPDATES = int(self.get_parameter('manual_reset_grace_updates').value)
 
@@ -171,6 +182,7 @@ class ParticleFiler(Node):
         self.good_count = 0
         self.degraded_count = 0
         self.invalid_count = 0
+        self.degraded_status_count = 0
         self.raw_pose = None
         self.prev_raw_pose = None
         self.last_health_metrics = None
@@ -856,6 +868,7 @@ class ParticleFiler(Node):
         self.good_count = self.RECOVER_GOOD_COUNT
         self.degraded_count = 0
         self.invalid_count = 0
+        self.degraded_status_count = 0
         self.manual_reset_grace_remaining = self.MANUAL_RESET_GRACE_UPDATES
         self.last_health_metrics = {
             'status': float(self.health_status),
@@ -881,6 +894,7 @@ class ParticleFiler(Node):
         self.good_count = 0
         self.degraded_count = 0
         self.invalid_count = self.LOST_BAD_COUNT
+        self.degraded_status_count = 0
         self.manual_reset_grace_remaining = 0
         self.last_health_metrics = {
             'status': float(self.health_status),
@@ -1023,6 +1037,7 @@ class ParticleFiler(Node):
             self.good_count = self.RECOVER_GOOD_COUNT
             self.degraded_count = 0
             self.invalid_count = 0
+            self.degraded_status_count = 0
             self.manual_reset_grace_remaining -= 1
 
             metrics = {
@@ -1067,10 +1082,18 @@ class ParticleFiler(Node):
             abs(yaw_residual) > self.MAX_DEGRADED_YAW_RESIDUAL_RAD
         )
 
-        good_evidence = (
-            scan_good_evidence and
-            uncertainty_good_evidence and
+        obstacle_present = obstacle_short_ratio >= self.OBSTACLE_PRESENT_RATIO
+        obstacle_good_evidence = (
+            obstacle_present and
+            scan_has_static_candidates and
+            static_match_ratio >= self.OBSTACLE_GOOD_MATCH_RATIO and
+            xy_spread <= self.MAX_DEGRADED_XY_SPREAD_M and
             motion_good_evidence
+        )
+
+        good_evidence = (
+            (scan_good_evidence and uncertainty_good_evidence and motion_good_evidence)
+            or obstacle_good_evidence
         )
 
         # Scan mismatch alone is treated as DEGRADED, not INVALID. This keeps the
@@ -1110,6 +1133,19 @@ class ParticleFiler(Node):
         else:  # GOOD
             if self.degraded_count >= self.DEGRADED_BAD_COUNT:
                 self.health_status = self.PF_STATUS_DEGRADED
+
+        # If localization remains DEGRADED for too many consecutive update cycles,
+        # escalate to INVALID. This is a separate watchdog from immediate invalid
+        # evidence, so a persistent uncertain-but-not-invalid state can still be
+        # handled conservatively by downstream modules.
+        if self.health_status == self.PF_STATUS_DEGRADED:
+            self.degraded_status_count += 1
+            if self.degraded_status_count >= self.MAX_DEGRADED_COUNT:
+                self.health_status = self.PF_STATUS_INVALID
+                self.invalid_count = self.LOST_BAD_COUNT
+                self.good_count = 0
+        else:
+            self.degraded_status_count = 0
 
         metrics = {
             'status': float(self.health_status),
@@ -1196,7 +1232,8 @@ class ParticleFiler(Node):
                         'obs_short:', round(health_metrics['obstacle_short_ratio'], 3),
                         'xy_spread:', round(health_metrics['xy_spread'], 3),
                         'lat_res:', round(health_metrics['lateral_residual'], 3),
-                        'yaw_res:', round(health_metrics['yaw_residual'], 3)]))
+                        'yaw_res:', round(health_metrics['yaw_residual'], 3),
+                        'deg_cycles:', int(self.degraded_status_count)]))
 
                 self.visualize()
 
