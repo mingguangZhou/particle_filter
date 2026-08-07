@@ -44,6 +44,31 @@ The "range_method" parameter determines which RangeLibc ray casting method to us
 
 ![Range Method Performance Comparison](./media/comparison.png)
 
+## ROS 2 onboard localization visualization
+
+The existing onboard localization launch remains unchanged:
+
+```bash
+ros2 launch particle_filter localize_launch.py
+```
+
+To start the same onboard localization together with the prepared RViz configuration:
+
+```bash
+ros2 launch particle_filter localize_onboard_rviz_launch.py
+```
+
+The prepared RViz view uses `map` as the fixed frame and enables:
+
+- `/map` with **Transient Local** durability
+- `/scan`
+- `/pf/viz/inferred_pose` for the current PF localization result
+- TF visualization
+- **2D Pose Estimate** on `/initialpose`
+- **Publish Point** on `/clicked_point`
+
+The particle visualization is intentionally not enabled in this onboard RViz configuration.
+
 # Docs
 
 This code is the staff solution to the lab guide found in the [/docs](/particle_filter/docs) folder. A mathematical derivation of MCL is available in that guide.
