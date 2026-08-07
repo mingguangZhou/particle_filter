@@ -53,8 +53,8 @@ particle_filter:
     # [7] yaw_residual [rad]
     # [8] n_eff_ratio
 
-    good_match_ratio: 0.85
-    degraded_match_ratio: 0.75
+    good_match_ratio: 0.75
+    degraded_match_ratio: 0.5
     good_scan_error_m: 0.10
     degraded_scan_error_m: 0.20
     obstacle_short_error_m: 0.50
@@ -95,8 +95,9 @@ particle_filter:
 map_server:
   ros__parameters:
     # assuming map file is in particle_filter/maps
-    map: 'Spielberg_map'
+    # map: 'Spielberg_map'
     # map: 'Yacht_Office_20260311_00'
     # map: 'basement_fixed'
     # map: 'levine_hall_scanned'
     # map: 'scanned_2026042400'
+    map: 'living_room_scanned_0807' 
