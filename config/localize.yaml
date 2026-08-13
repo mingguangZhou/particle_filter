@@ -100,4 +100,5 @@ map_server:
     # map: 'basement_fixed'
     # map: 'levine_hall_scanned'
     # map: 'scanned_2026042400'
-    map: 'living_room_scanned_0807' 
+    # map: 'living_room_scanned_0807'
+    map: 'cw_scanned_livingroom_20260813_01'  
