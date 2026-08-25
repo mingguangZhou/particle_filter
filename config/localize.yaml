@@ -53,8 +53,8 @@ particle_filter:
     # [7] yaw_residual [rad]
     # [8] n_eff_ratio
 
-    good_match_ratio: 0.75
-    degraded_match_ratio: 0.5
+    good_match_ratio: 0.60
+    degraded_match_ratio: 0.40
     good_scan_error_m: 0.10
     degraded_scan_error_m: 0.20
     obstacle_short_error_m: 0.50
@@ -75,7 +75,7 @@ particle_filter:
     # Approx time = count / current PF update rate shown by "iters per sec".
     lost_bad_count: 8
     degraded_bad_count: 5
-    recover_good_count: 8
+    recover_good_count: 5
 
     # Grace updates after RViz /initialpose reset. During this window, health
     # stays GOOD and the intentional manual pose jump is not counted as failure.
