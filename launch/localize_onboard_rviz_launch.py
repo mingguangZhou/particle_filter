@@ -69,7 +69,8 @@ def generate_launch_description():
         executable='rviz2',
         name='rviz2',
         output='screen',
-        arguments=['-d', LaunchConfiguration('rviz_config')]
+        arguments=['-d', LaunchConfiguration('rviz_config')],
+        parameters=[{'use_sim_time': False}]
     )
 
     return LaunchDescription([
